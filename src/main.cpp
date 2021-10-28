@@ -50,20 +50,19 @@ unsigned int colPins[] = {11, 10, 9, 8, 7, 6, 5, 2};
 //inputstates
 
 //00 n 10 down 01 up
-// enc 1 - 4
-volatile byte shift1_1 = 0;
-// enc 5-6 & enc btn 1-4
-volatile byte shift1_2 = 0;
+volatile byte enc1 = B00000000;
+volatile byte enc2 = B00000000;
 
-volatile byte shift2_1 = 0;
-volatile byte shift2_2 = 0;
+volatile byte encBtn = B00000000;
 
-//1-8
-volatile byte matrix[] = {0, 0, 0, 0};
+volatile byte ctrl1 = B00000000;
+volatile byte ctrl2 = B00000000;
+
+volatile byte matrix[] = {B00000000, B00000000, B00000000, B00000000};
 //1-32 (pulldown)
-volatile byte matrixTemp[] = {0, 0, 0, 0};
+volatile byte matrixTemp[] = {B00000000, B00000000, B00000000, B00000000};
 
-bool update_inp = false;
+bool update_matrix = false;
 bool update_ctrl = false;
 
 // 0 input, 1 ctrl
@@ -89,6 +88,7 @@ void setup()
 
 void loop()
 {
+  //check matrix
   for (int r = 0; r < 4; r++)
   {
     byte row = 0x0;
@@ -104,24 +104,27 @@ void loop()
     if (matrix[r] != matrixTemp[r])
     {
       matrix[r] = matrixTemp[r];
-      update_inp = true;
+      update_matrix = true;
     }
   }
 
   checkRegs();
 
-  if (update_inp)
+  if (update_matrix)
     //pull up IRQ
     digitalWrite(24, HIGH);
   if (update_ctrl)
     //pull up IRQ
     digitalWrite(23, HIGH);
 }
+
+// set which Data is requested
 void setOutput(int byteCount)
 {
   nextSend = Wire.read();
 }
 
+//send Data when requested
 void inputRead()
 {
   if (nextSend == 0u)
@@ -133,19 +136,23 @@ void inputRead()
     {
       Wire.write(matrix[i]);
     }
-    bool update_inp = false;
+    bool update_matrix = false;
   }
   else
   {
     digitalWrite(IRQ_PIN_CTRL, LOW);
-    Wire.write(shift1_1);
-    Wire.write(shift1_2);
-    Wire.write(shift2_1);
-    Wire.write(shift2_2);
+    Wire.write(enc1);
+    Wire.write(enc2);
+    Wire.write(encBtn);
+    Wire.write(ctrl1);
+    Wire.write(ctrl2);
     //put encstep to a neutral state
-    shift1_1 = 0;
-    byte shiftmask = ((1 << 4) - 1) << 4;
-    shift1_2 = (shift1_2 & ~shiftmask);
+    enc1 = B00000000;
+    enc2 = B00000000;
+    encBtn = B00000000;
+    ctrl1 = B00000000;
+    ctrl2 = B00000000;
+
     bool update_ctrl = false;
   }
 
@@ -161,10 +168,10 @@ byte checkRegs()
 
   int stateA = 0;
   int stateB = 0;
-  int index = 0;
+  int indexEnc = 0;
 
   // check encoder pins (two per cycle)
-  for (int i = 0; i < 12; i++)
+  for (int i = 0; i < 12; i += 2)
   {
 
     // Pulse the Clock (rising edge shifts the next bit).
@@ -177,42 +184,50 @@ byte checkRegs()
     digitalWrite(clk, LOW);
     stateB = digitalRead(qh1);
 
-    i++;
-    index = i / 2;
-    byte state = (stateA << 1) | stateB;
-    encStates[i / 2] = state;
-    if (state == DIR_CW || state == DIR_CCW)
-    {
-      if (i <= 8)
-      {
-        const int shiftBy = i - 1;
-        // mask two digits to read current state
-        byte shiftmask = ((1 << 2) - 1) << shiftBy;
-        byte stateCurr = (shift1_1 >> shiftBy);
-        // check if state has changed since last time
-        if (stateCurr != (state >> 4))
-        {
-          //invert mask & shift in new state
-          shift1_1 = (shift1_1 & ~shiftmask) | (state << shiftBy);
-          // signal teensy to pull update
-          update_inp = true;
-        }
-      }
-      else
-      {
-        const int shiftBy = i - 9;
-        // mask two digits to read current state
-        byte shiftmask = ((1 << 2) - 1) << shiftBy;
-        byte stateCurr = (shift1_2 >> shiftBy);
+    //determin pinstate
+    byte pinState = (stateA << 1) | stateB;
+    indexEnc = i / 2;
+    // Determine new state from the pins and state table.
+    encStates[indexEnc] = ttable[encStates[indexEnc] & 0xf][pinState];
 
-        if (stateCurr != (state >> 4))
-        {
-          //invert mask & shift in new state
-          shift1_2 = (shift1_2 & ~shiftmask) | (state << shiftBy);
-          // signal teensy to pull update
-          update_inp = true;
-        }
+    switch (encStates[indexEnc])
+    {
+    case DIR_CW:
+      if (i < 8)
+      {
+        bitWrite(enc1, indexEnc, 1);
+        bitWrite(enc1, indexEnc + 1, 0);
       }
+      bitWrite(enc2, indexEnc, 1);
+      bitWrite(enc2, indexEnc + 1, 0);
+      update_ctrl = true;
+      break;
+    case DIR_CCW:
+      if (i < 8)
+      {
+        bitWrite(enc1, indexEnc, 0);
+        bitWrite(enc1, indexEnc + 1, 1);
+      }
+      bitWrite(enc2, indexEnc, 0);
+      bitWrite(enc2, indexEnc + 1, 1);
+      update_ctrl = true;
+      break;
+    default:
+      break;
     }
   }
+  // check remaining serial data
+  for (int i = 0; i < 4; i++)
+  {
+    // Pulse the Clock (rising edge shifts the next bit).
+    digitalWrite(clk, HIGH);
+    digitalWrite(clk, LOW);
+    int data = digitalRead(qh1);
+    if (bitRead(encBtn, i) != data)
+    {
+      bitWrite(encBtn, i, data);
+      update_ctrl = true;
+    }
+  }
+  // read ctrl buttons
 }
