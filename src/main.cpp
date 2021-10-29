@@ -69,55 +69,6 @@ bool update_ctrl = false;
 unsigned int nextSend = 0;
 
 unsigned char encStates[6];
-
-void setup()
-{
-  // put your setup code here, to run once:
-  Wire.begin(0x01);
-  Wire.onRequest(inputRead);
-  Wire.onReceive(setOutput);
-  // Assign variables.
-
-  // Set pins to input.
-  pinMode(qh1, INPUT);
-  pinMode(qh2, INPUT);
-
-  pinMode(sh, OUTPUT);
-  pinMode(clk, OUTPUT);
-}
-
-void loop()
-{
-  //check matrix
-  for (int r = 0; r < 4; r++)
-  {
-    byte row = 0x0;
-    for (int c = 0; c < 8; c++)
-    {
-      if (digitalRead(rowPins[r]) == 1 && digitalRead(colPins[c]) == 1)
-        //sets bit at c to 1 if button is pressed
-        matrixTemp[r] |= 1u << c;
-      else
-        matrixTemp[r] |= 0u << c;
-    }
-    //compare whole byte to avoid notification while bouncing
-    if (matrix[r] != matrixTemp[r])
-    {
-      matrix[r] = matrixTemp[r];
-      update_matrix = true;
-    }
-  }
-
-  checkRegs();
-
-  if (update_matrix)
-    //pull up IRQ
-    digitalWrite(24, HIGH);
-  if (update_ctrl)
-    //pull up IRQ
-    digitalWrite(23, HIGH);
-}
-
 // set which Data is requested
 void setOutput(int byteCount)
 {
@@ -136,7 +87,7 @@ void inputRead()
     {
       Wire.write(matrix[i]);
     }
-    bool update_matrix = false;
+    update_matrix = false;
   }
   else
   {
@@ -153,13 +104,13 @@ void inputRead()
     ctrl1 = B00000000;
     ctrl2 = B00000000;
 
-    bool update_ctrl = false;
+    update_ctrl = false;
   }
 
   //send data
 }
 
-byte checkRegs()
+void checkRegs()
 {
 
   // Load data to ShiftRegister
@@ -230,4 +181,59 @@ byte checkRegs()
     }
   }
   // read ctrl buttons
+}
+
+void setup()
+{
+  // put your setup code here, to run once:
+  Wire.begin(0x01);
+  Wire.onRequest(inputRead);
+  Wire.onReceive(setOutput);
+  // Assign variables.
+
+  // Set pins to input.
+  pinMode(qh1, INPUT);
+  pinMode(qh2, INPUT);
+
+  pinMode(sh, OUTPUT);
+  pinMode(clk, OUTPUT);
+}
+
+void loop()
+{
+  //check matrix
+  for (int r = 0; r < 4; r++)
+  {
+    for (int c = 0; c < 8; c++)
+    {
+      if (digitalRead(rowPins[r]) == 1 && digitalRead(colPins[c]) == 1)
+      {
+        //sets bit at c to 1 if button is pressed
+        matrixTemp[r] |= 1u << c;
+      }
+      else
+      {
+        matrixTemp[r] |= 0u << c;
+      }
+    }
+    //compare whole byte to avoid notification while bouncing
+    if (matrix[r] != matrixTemp[r])
+    {
+      matrix[r] = matrixTemp[r];
+      update_matrix = true;
+    }
+  }
+
+  checkRegs();
+
+  if (update_matrix)
+  {
+    //pull up IRQ
+    digitalWrite(24, HIGH);
+  }
+  if (update_ctrl)
+  {
+    //pull up IRQ
+    digitalWrite(23, HIGH);
+  }
 }
