@@ -41,8 +41,10 @@ const unsigned char ttable[7][4] = {
 #define sh 12  // d9
 #define clk 13 // d10
 
-#define IRQ_PIN_INPUT 16
+#define IRQ_PIN_INPUT 16 //D13
 #define IRQ_PIN_CTRL 1
+
+#define I2C_ADD 0x00
 
 unsigned int rowPins[] = {22, 21, 20, 19};
 unsigned int colPins[] = {11, 10, 9, 8, 7, 6, 5, 2};
@@ -70,6 +72,7 @@ unsigned int nextSend = 0;
 
 unsigned char encStates[6];
 // set which Data is requested
+
 void setOutput(int byteCount)
 {
   nextSend = Wire.read();
@@ -81,7 +84,7 @@ void inputRead()
   if (nextSend == 0u)
   {
 
-    //pull down IRQ
+    //pull bring IRQ in idle position
     digitalWrite(IRQ_PIN_INPUT, HIGH);
     for (int i = 0; i < 4; i++)
     {
@@ -91,7 +94,7 @@ void inputRead()
   }
   else
   {
-    digitalWrite(IRQ_PIN_CTRL, LOW);
+    digitalWrite(IRQ_PIN_CTRL, HIGH);
     Wire.write(enc1);
     Wire.write(enc2);
     Wire.write(encBtn);
@@ -128,11 +131,13 @@ void checkRegs()
     // Pulse the Clock (rising edge shifts the next bit).
     digitalWrite(clk, HIGH);
     digitalWrite(clk, LOW);
+
     stateA = digitalRead(qh1);
 
     // Pulse the Clock (rising edge shifts the next bit).
     digitalWrite(clk, HIGH);
     digitalWrite(clk, LOW);
+
     stateB = digitalRead(qh1);
 
     //determin pinstate
@@ -140,7 +145,7 @@ void checkRegs()
     indexEnc = i / 2;
     // Determine new state from the pins and state table.
     encStates[indexEnc] = ttable[encStates[indexEnc] & 0xf][pinState];
-
+    Serial.println(encStates[indexEnc] + " , index: " + indexEnc);
     switch (encStates[indexEnc])
     {
     case DIR_CW:
@@ -173,7 +178,9 @@ void checkRegs()
     // Pulse the Clock (rising edge shifts the next bit).
     digitalWrite(clk, HIGH);
     digitalWrite(clk, LOW);
+
     int data = digitalRead(qh1);
+
     if (bitRead(encBtn, i) != data)
     {
       bitWrite(encBtn, i, data);
@@ -185,8 +192,9 @@ void checkRegs()
 
 void setup()
 {
+  Serial.begin(9600);
   // put your setup code here, to run once:
-  Wire.begin(0x01);
+  Wire.begin(I2C_ADD);
   Wire.onRequest(inputRead);
   Wire.onReceive(setOutput);
   // Assign variables.
@@ -197,6 +205,13 @@ void setup()
 
   pinMode(sh, OUTPUT);
   pinMode(clk, OUTPUT);
+
+  //pull up IRQ
+  digitalWrite(IRQ_PIN_INPUT, HIGH);
+  //pull up IRQ
+  digitalWrite(IRQ_PIN_INPUT, HIGH);
+
+  Serial.println("initialized successfully!");
 }
 
 void loop()
@@ -228,12 +243,22 @@ void loop()
 
   if (update_matrix)
   {
+    if (millis() % 5000 == 0)
+    {
+      digitalWrite(IRQ_PIN_INPUT, HIGH);
+    }
+    Serial.println("matrix IRQ active (low)");
     //pull up IRQ
-    digitalWrite(24, HIGH);
+    digitalWrite(IRQ_PIN_INPUT, LOW);
   }
   if (update_ctrl)
   {
+    if (millis() % 5000 == 0)
+    {
+      digitalWrite(IRQ_PIN_INPUT, HIGH);
+    }
+    Serial.println("ctrl IRQ active (low)");
     //pull up IRQ
-    digitalWrite(23, HIGH);
+    digitalWrite(IRQ_PIN_CTRL, LOW);
   }
 }
