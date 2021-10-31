@@ -44,7 +44,7 @@ const unsigned char ttable[7][4] = {
 #define IRQ_PIN_INPUT 16 //D13
 #define IRQ_PIN_CTRL 1
 
-#define I2C_ADD 0x00
+#define I2C_ADD 80
 
 unsigned int rowPins[] = {22, 21, 20, 19};
 unsigned int colPins[] = {11, 10, 9, 8, 7, 6, 5, 2};
@@ -67,7 +67,7 @@ volatile byte matrixTemp[] = {B00000000, B00000000, B00000000, B00000000};
 bool update_matrix = false;
 bool update_ctrl = false;
 
-// 0 input, 1 ctrl
+// on B00000000 read matrix , on B00000001 read ctrl
 byte nextSend = B00000000;
 
 unsigned char encStates[6];
@@ -75,26 +75,31 @@ unsigned char encStates[6];
 
 void setOutput(int byteCount)
 {
+  // on B00000000 read matrix , on B00000001 read ctrl
   nextSend = Wire.read();
 }
 
 //send Data when requested
 void inputRead()
 {
+  //read matrix input
   if (nextSend == B00000000)
   {
-
     //pull bring IRQ in idle position
     digitalWrite(IRQ_PIN_INPUT, HIGH);
+    update_matrix = false;
+
     for (int i = 0; i < 4; i++)
     {
       Wire.write(matrix[i]);
     }
-    update_matrix = false;
   }
   else
   {
+
     digitalWrite(IRQ_PIN_CTRL, HIGH);
+    update_ctrl = false;
+
     Wire.write(enc1);
     Wire.write(enc2);
     Wire.write(encBtn);
@@ -106,11 +111,7 @@ void inputRead()
     encBtn = B00000000;
     ctrl1 = B00000000;
     ctrl2 = B00000000;
-
-    update_ctrl = false;
   }
-
-  //send data
 }
 
 void checkRegs()
@@ -142,7 +143,6 @@ void checkRegs()
 
     //determin pinstate
     byte pinState = (stateA << 1) | stateB;
-
 
     indexEnc = i / 2;
     // Determine new state from the pins and state table.
@@ -196,40 +196,34 @@ void checkRegs()
 
 void setup()
 {
-  pinMode(qh1, INPUT);
-  pinMode(qh2, INPUT);
-  pinMode(sh, OUTPUT);
-  pinMode(clk, OUTPUT);
-  pinMode(IRQ_PIN_CTRL, OUTPUT);
-  pinMode(IRQ_PIN_INPUT, OUTPUT);
-
+  //set pinModes for matrix
   for (int i = 0; i < 4; i++)
   {
     pinMode(rowPins[i], INPUT);
   }
   for (int j = 0; j < 8; j++)
   {
-    pinMode(colPins[j], INPUT);
+    pinMode(colPins[j], OUTPUT);
   }
+
+  // Set for shiftreg
+  pinMode(qh1, INPUT);
+  pinMode(qh2, INPUT);
+  pinMode(sh, OUTPUT);
+  pinMode(clk, OUTPUT);
+
+  // set Interrupt Pin Modes
+  pinMode(IRQ_PIN_CTRL, OUTPUT);
+  pinMode(IRQ_PIN_INPUT, OUTPUT);
+  //pull up IRQ
+  digitalWrite(IRQ_PIN_INPUT, HIGH);
+  digitalWrite(IRQ_PIN_INPUT, HIGH);
 
   Serial.begin(9600);
   // put your setup code here, to run once:
   Wire.begin(I2C_ADD);
   Wire.onRequest(inputRead);
   Wire.onReceive(setOutput);
-  // Assign variables.
-
-  // Set pins to input.
-  pinMode(qh1, INPUT);
-  pinMode(qh2, INPUT);
-
-  pinMode(sh, OUTPUT);
-  pinMode(clk, OUTPUT);
-
-  //pull up IRQ
-  digitalWrite(IRQ_PIN_INPUT, HIGH);
-  //pull up IRQ
-  digitalWrite(IRQ_PIN_INPUT, HIGH);
 
   Serial.println("initialized successfully!");
 }
@@ -237,34 +231,50 @@ void setup()
 void loop()
 {
   //check matrix
-  for (int r = 0; r < 4; r++)
+  for (int c = 0; c < 8; c++)
   {
-    for (int c = 0; c < 8; c++)
+    // pull col high to if signal comes through row pin (button at intersection of row and col was pushed)
+    digitalWrite(colPins[c], HIGH);
+
+    for (int r = 0; r < 4; r++)
     {
-      if (digitalRead(rowPins[r]) == 1 && digitalRead(colPins[c]) == 1)
+      //when button was pushed
+      if (digitalRead(rowPins[r]) == HIGH)
       {
+
+        //check if anything changed
+        if (bitRead(matrix[r], c) != 1)
+        {
+          bitWrite(matrix[r], c, 1);
+          ;
+          update_matrix = true;
+        }
+
         //sets bit at c to 1 if button is pressed
-        matrixTemp[r] |= 1u << c;
       }
+      // if button was released or nothing happend
       else
       {
-        matrixTemp[r] |= 0u << c;
+        if (bitRead(matrix[r], c) != 0)
+        {
+          bitWrite(matrix[r], c, 0);
+          ;
+          update_matrix = true;
+        }
       }
     }
-    //compare whole byte to avoid notification while bouncing
-    if (matrix[r] != matrixTemp[r])
-    {
-      matrix[r] = matrixTemp[r];
-      update_matrix = true;
-    }
+    // dont interfere with other checks
+    digitalWrite(colPins[c], LOW);
   }
 
   checkRegs();
 
   if (update_matrix)
   {
+    // retrigger falling edge every 5 seks
     if (millis() % 5000 == 0)
     {
+      Serial.println("IRQ ctrl matrix");
       digitalWrite(IRQ_PIN_INPUT, HIGH);
     }
     //pull up IRQ
@@ -272,11 +282,13 @@ void loop()
   }
   if (update_ctrl)
   {
+    // retrigger falling edge every 5 seks
     if (millis() % 5000 == 0)
     {
+
+      Serial.println("IRQ ctrl retriggered");
       digitalWrite(IRQ_PIN_INPUT, HIGH);
     }
-    Serial.println("ctrl IRQ active (low)");
     //pull up IRQ
     digitalWrite(IRQ_PIN_CTRL, LOW);
   }
