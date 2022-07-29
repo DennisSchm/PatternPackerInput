@@ -56,338 +56,261 @@ const uint8_t ttable[7][4] = {
     {R_CCW_NEXT, R_CCW_FINAL, R_CCW_BEGIN, R_START},
 };
 
-volatile uint8_t regsMatrix[]{};
-volatile uint8_t regsCtrl[]{};
+volatile char matrixBtns[]{0, 0, 0, 0};
+volatile uint8_t matrixBtnsSent[]{0, 0, 0, 0};
+volatile bool matrixBtnsDiffDetected{false};
+unsigned long matrixBtnsDiffDetectedAt{0};
 
-volatile uint8_t matrix[4]{};
-volatile uint8_t matrixPrev[4]{};
-volatile uint8_t matrixSent[4]{};
-volatile uint8_t ctrl[2]{};
-volatile uint8_t ctrlPrev[2]{};
-volatile uint8_t ctrlSent[2]{}; // 13 elements
-volatile uint8_t encBtn[2];     // 9 elements
-volatile uint8_t encBtnPrev[9];
-volatile uint8_t encBtnSent[9];
-volatile int enc[9]{};
-// statemachine no need for debounce
-volatile uint8_t encTransitionStates[9] = {R_START, R_START, R_START, R_START, R_START, R_START, R_START, R_START, R_START};
+volatile uint16_t ctrlBtns{0};
+volatile uint16_t ctrlBtnsSent{0};
+volatile bool ctrlBtnsDiffDetected{false};
+unsigned long ctrlBtnsDiffDetectedAt{0};
 
-volatile unsigned long matrix_lastChangeAt{0};
-volatile unsigned long ctrlData_lastChangeAt{0};
+volatile uint16_t encBtns{0};
+volatile uint16_t encBtnsSent{0};
+volatile bool encBtnsDiffDetected{false};
+unsigned long encBtnsDiffDetectedAt{0};
 
-volatile uint8_t transmissionDataMatrix[5];
-volatile int cBytesTransmissionDataMatrix{};
-volatile uint8_t transmissionDataCtrl[13];
-volatile int cBytesTransmissionDataCtrl{};
-bool dataSentCtrl{false};
-bool dataSentMatrix{false};
+volatile int8_t enc[9]{};
+volatile bool encsDiffDetected{false};
+volatile uint32_t encStates{0};
 
-void setDataSentCtrl()
-{
-  for (int i{0}; i < 2; i++)
-    ctrlSent[i] = ctrl[i];
-  for (int i{0}; i < 2; i++)
-    encBtnSent[i] = encBtn[i];
-  for (int i{0}; i < 9; i++)
-    enc[i] = 0;
-}
+// statemachine makes debounce obsolete
+volatile uint8_t encTransStates[9] = {R_START, R_START, R_START, R_START, R_START, R_START, R_START, R_START, R_START};
 
-void setDataSentMatrix()
+bool isDifferentToSentMatrixBtns()
 {
   for (int i{0}; i < 4; i++)
-    matrixSent[i] = matrix[i];
+    if (matrixBtns[i] != matrixBtnsSent[i])
+      return true;
+  return false;
 }
 
-void prepTransmissionDataMatrix()
+/*
+ctrl and encoder
+*/
+void updateCtrlBtn(bool state, int num)
+{
+  if (bitRead(ctrlBtns, num) != state)
+  {
+    bitWrite(ctrlBtns, num, state);
+    Serial.print("Ctrl Btn ");
+    Serial.print(num, DEC);
+    Serial.print(" updated: ");
+    Serial.print(state);
+    Serial.print(" | ");
+  }
+}
+void updateEncBtn(bool state, int num)
 {
 
-  int iDataBlock{0};
-  for (int i{0}; i < 4; i++)
-    if (matrix[i] != matrixSent[i])
-      bitWrite(transmissionDataMatrix[iDataBlock], i, 1);
-  iDataBlock++;
-  for (int i{0}; i < 4; i++)
+  if (bitRead(encBtns, num) != state)
   {
-    if (matrix[i] != matrixSent[i])
-    {
-      transmissionDataMatrix[iDataBlock] = matrix[i];
-      iDataBlock++;
-    }
+    bitWrite(encBtns, num, state);
+    Serial.print("Enc Btn ");
+    Serial.print(num, DEC);
+    Serial.print(" updated: ");
+    Serial.print(state);
+    Serial.print(" | ");
   }
-  cBytesTransmissionDataMatrix = iDataBlock;
 }
-void prepTransmissionDataCtrl()
+// enc 1-4 --> encState1, 4-8 --> encState2, 9 encState3
+void updateEnc(int a, int b, int num)
 {
-  // clear prev transmissionData
-  for (int i{0}; i < 13; i++)
-    transmissionDataCtrl[i] = 0;
-  // first two bytes hold information which ctrl data has changed
-  bool ctrlBtnUpdates{ctrlSent[0] != ctrl[0] || ctrlSent[1] != ctrl[1]};
-  bool encBtnUpdates{encBtn[0] != encBtnSent[0] || encBtn[1] != encBtnSent[1]};
-  bool encUpdates{false};
-  for (int i{0}; i < 9; i++)
-    if (enc[i] != 0)
-      encUpdates = true;
-  bool ctrlBtnUpdates0To7{ctrlSent[0] != ctrl[0]};
 
-  bool ctrlBtnUpdates8To12{ctrlSent[1] != ctrl[1]};
-  bool encBtnUpdates0To8{encBtn[0] != encBtnSent[0]};
-  bool encBtnUpdates9{encBtn[1] != encBtnSent[1]};
-  bool encUpdate0{enc[0] != 0};
+  byte newState = (a << 1) | b;
+  // Determine new state from bitA and B and state table.
+  encTransStates[num] = ttable[encTransStates[num] & B00001111][newState];
+  byte maskedState = encTransStates[num] & B00110000;
 
-  int iDataBlock{0};
-  bitWrite(transmissionDataCtrl[iDataBlock], 0, ctrlBtnUpdates);
-  bitWrite(transmissionDataCtrl[iDataBlock], 1, encBtnUpdates);
-  bitWrite(transmissionDataCtrl[iDataBlock], 2, encUpdates);
-  bitWrite(transmissionDataCtrl[iDataBlock], 3, ctrlBtnUpdates0To7);
-  bitWrite(transmissionDataCtrl[iDataBlock], 4, ctrlBtnUpdates8To12);
-  bitWrite(transmissionDataCtrl[iDataBlock], 5, encBtnUpdates0To8);
-  bitWrite(transmissionDataCtrl[iDataBlock], 6, encBtnUpdates9);
-  bitWrite(transmissionDataCtrl[iDataBlock], 7, encUpdate0);
-  iDataBlock++;
-  if (encUpdates)
+  if (maskedState == DIR_CW)
   {
-    for (int i{1}; i < 9; i++)
-    {
-      if (enc[i] != 0)
-      {
-        bitWrite(transmissionDataCtrl[iDataBlock], i - 1, true);
-      }
-    }
-    iDataBlock++;
+    enc[num]++;
+    Serial.print("Enc ");
+    Serial.print(num, DEC);
+    Serial.println(" incremented");
   }
-
-  if (ctrlBtnUpdates)
+  if (maskedState == DIR_CCW)
   {
-    if (ctrlBtnUpdates0To7)
-    {
-      transmissionDataCtrl[iDataBlock] = ctrl[0];
-      iDataBlock++;
-    }
-    if (ctrlBtnUpdates8To12)
-    {
-      transmissionDataCtrl[iDataBlock] = ctrl[1];
-      iDataBlock++;
-    }
+    enc[num]--;
+    Serial.print("Enc ");
+    Serial.print(num, DEC);
+    Serial.println(" decremented");
   }
-  if (encBtnUpdates)
-  {
-    if (encBtnUpdates0To8)
-    {
-      transmissionDataCtrl[iDataBlock] = encBtn[0];
-      iDataBlock++;
-    }
-    if (encBtnUpdates9)
-    {
-      transmissionDataCtrl[iDataBlock] = encBtn[1];
-      iDataBlock++;
-    }
-  }
-  if (encUpdates)
-  {
-    for (int i{0}; i < 9; i++)
-    {
-      if (enc[i] != 0)
-      {
-        transmissionDataCtrl[iDataBlock] = (int8_t)enc[i];
-        iDataBlock++;
-      }
-    }
-  }
-  cBytesTransmissionDataCtrl = iDataBlock;
 }
-
-void sendDataCtrl()
-{
-  // set all enc to 0
-}
-
 void setActiveRow(byte row)
 {
   digitalWrite(clockOutPin, LOW);
-  digitalWrite(latchOutPin, HIGH);                  // close latch to shift byte out paralel
+  digitalWrite(latchOutPin, HIGH);                  // shift serial data to storrage/output
   shiftOut(dataOutPin, clockOutPin, LSBFIRST, row); // write that byte
-  digitalWrite(latchOutPin, LOW);                   // shift out
+  digitalWrite(latchOutPin, LOW);                   // set latch to low so we can write an entire byte at once
 }
-void readRegs()
+// to save battery reduces times this function gets called
+void readShift()
 {
-  byte activeRow = B10000000;
-  for (int i{0}; i < 4; i++)
+  byte active = B01000000;
+  // repeat for every row of matrix
+  for (int iRow = 0; iRow < 4; iRow++)
   {
-    setActiveRow(activeRow);
+    digitalWrite(clockInPin, HIGH);
+    digitalWrite(latchInPin, LOW);
+    digitalWrite(latchInPin, HIGH);
 
-    // discard first 3 cycles of ctrl data
-    // TODO design PCB so that matrix register is adressable seperate to avoid discarding
-    if (i < 3)
-      for (int j{}; j < 5; j++)
-        shiftIn(dataInPin, clockInPin, LSBFIRST);
-    else
-      for (int j{}; j < 5; j++)
-        regsCtrl[j] = shiftIn(dataInPin, clockInPin, LSBFIRST);
+    char reg = shiftIn(dataInPin, clockInPin, LSBFIRST);
+    updateCtrlBtn(bitRead(reg, 0), 2);
+    updateCtrlBtn(bitRead(reg, 1), 3);
+    updateEncBtn(bitRead(reg, 2), 3);
+    updateEncBtn(bitRead(reg, 3), 2);
+    updateEnc(bitRead(reg, 4), bitRead(reg, 5), 3);
+    updateEnc(bitRead(reg, 6), bitRead(reg, 7), 2);
 
-    regsMatrix[i] = shiftIn(dataInPin, clockInPin, LSBFIRST);
+    reg = shiftIn(dataInPin, clockInPin, LSBFIRST);
+    updateCtrlBtn(bitRead(reg, 0), 1);
+    updateEncBtn(bitRead(reg, 1), 1);
+    updateCtrlBtn(bitRead(reg, 2), 0);
+    updateEncBtn(bitRead(reg, 3), 0);
+    updateEnc(bitRead(reg, 5), bitRead(reg, 4), 0);
+    updateEnc(bitRead(reg, 7), bitRead(reg, 6), 1);
+
+    reg = shiftIn(dataInPin, clockInPin, LSBFIRST);
+    updateEnc(bitRead(reg, 1), bitRead(reg, 0), 5);
+    updateEnc(bitRead(reg, 2), bitRead(reg, 3), 4);
+    updateCtrlBtn(bitRead(reg, 4), 5);
+    updateCtrlBtn(bitRead(reg, 5), 4);
+    updateEncBtn(bitRead(reg, 6), 4);
+    updateEncBtn(bitRead(reg, 7), 5);
+
+    reg = shiftIn(dataInPin, clockInPin, LSBFIRST);
+    updateCtrlBtn(bitRead(reg, 0), 6);
+    updateCtrlBtn(bitRead(reg, 1), 7);
+    updateCtrlBtn(bitRead(reg, 2), 8);
+    updateEncBtn(bitRead(reg, 3), 6);
+    updateCtrlBtn(bitRead(reg, 4), 10);
+    updateCtrlBtn(bitRead(reg, 5), 11);
+    updateEnc(bitRead(reg, 7), bitRead(reg, 6), 6);
+
+    reg = shiftIn(dataInPin, clockInPin, LSBFIRST);
+    updateCtrlBtn(bitRead(reg, 0), 12);
+    updateCtrlBtn(bitRead(reg, 1), 9);
+    updateEncBtn(bitRead(reg, 2), 7);
+    updateEncBtn(bitRead(reg, 3), 8);
+    updateEnc(bitRead(reg, 5), bitRead(reg, 4), 7);
+    updateEnc(bitRead(reg, 7), bitRead(reg, 6), 8);
+
+    if (iRow == 3)
+      active = B10000000;
+    setActiveRow(active);
+    active = active >> 1;
+    reg = shiftIn(dataInPin, clockInPin, LSBFIRST);
+    // set rows to negative to prevent bleeding
     setActiveRow(B00000000);
-    activeRow = activeRow >> 1;
-    continue;
+    if (reg != 0)
+    {
+      char regCopy = reg;
+      bitWrite(reg, 0, bitRead(regCopy, 3));
+      bitWrite(reg, 1, bitRead(regCopy, 2));
+      bitWrite(reg, 2, bitRead(regCopy, 1));
+      bitWrite(reg, 3, bitRead(regCopy, 0));
+
+      char regDummy = reg;
+      for (int i{0}; i < 8; i++) // reverse Bit because of wiring
+        bitWrite(reg, i, bitRead(regDummy, 7 - i));
+    }
+
+    if (reg != matrixBtns[iRow])
+    {
+      Serial.println("matrix updated");
+      for (int c{0}; c < 8; c++)
+      {
+        int newBit = bitRead(reg, c);               // check the state of that bit
+        int prevBit = bitRead(matrixBtns[iRow], c); // check the previous state of that bit
+        if (newBit != prevBit)
+        {
+          Serial.print(iRow);
+          Serial.print(",");
+          Serial.print(c);
+          Serial.print(" | ");
+        }
+      }
+      matrixBtns[iRow] = reg;
+    }
   }
-}
-void handleEnc(int a, int b, int num)
-{
-  byte newState = (a << 1) | b;
-  int index = num;
-  // Determine new state from bitA and B and state table.
-  encTransitionStates[index] = ttable[encTransitionStates[index] & B00001111][newState];
-  byte maskedState = encTransitionStates[index] & B00110000;
-  switch (maskedState)
-  {
-  case DIR_CW:
-    enc[index]++;
-    break;
-
-  case DIR_CCW:
-    enc[index]--;
-    break;
-  default:
-    break;
-  }
-}
-
-void regToData()
-{
-  static int encAB[9][2];
-  encAB[0][0] = bitRead(regsCtrl[1], 5);
-  encAB[0][1] = bitRead(regsCtrl[1], 4);
-  encAB[1][0] = bitRead(regsCtrl[1], 7);
-  encAB[1][1] = bitRead(regsCtrl[1], 6);
-  encAB[2][0] = bitRead(regsCtrl[0], 6);
-  encAB[2][1] = bitRead(regsCtrl[0], 7);
-  encAB[3][0] = bitRead(regsCtrl[0], 4);
-  encAB[3][1] = bitRead(regsCtrl[0], 5);
-  encAB[4][0] = bitRead(regsCtrl[2], 2);
-  encAB[4][1] = bitRead(regsCtrl[2], 3);
-  encAB[5][0] = bitRead(regsCtrl[2], 1);
-  encAB[5][1] = bitRead(regsCtrl[2], 0);
-  encAB[6][0] = bitRead(regsCtrl[3], 7);
-  encAB[6][1] = bitRead(regsCtrl[3], 6);
-  encAB[7][0] = bitRead(regsCtrl[4], 5);
-  encAB[7][1] = bitRead(regsCtrl[4], 4);
-  encAB[8][0] = bitRead(regsCtrl[4], 7);
-  encAB[8][1] = bitRead(regsCtrl[4], 6);
-  for (int i{0}; i < 9; i++)
-    handleEnc(encAB[i][0], encAB[i][1], 0);
-
-  bitWrite(ctrl[0], 0, bitRead(regsCtrl[1], 2));
-  bitWrite(ctrl[0], 1, bitRead(regsCtrl[1], 0));
-  bitWrite(ctrl[0], 2, bitRead(regsCtrl[0], 0));
-  bitWrite(ctrl[0], 3, bitRead(regsCtrl[0], 1));
-  bitWrite(ctrl[0], 4, bitRead(regsCtrl[2], 5));
-  bitWrite(ctrl[0], 5, bitRead(regsCtrl[2], 4));
-  bitWrite(ctrl[0], 6, bitRead(regsCtrl[3], 0));
-  bitWrite(ctrl[0], 7, bitRead(regsCtrl[3], 1));
-
-  bitWrite(ctrl[1], 8, bitRead(regsCtrl[3], 2));
-  bitWrite(ctrl[1], 9, bitRead(regsCtrl[4], 1));
-  bitWrite(ctrl[1], 10, bitRead(regsCtrl[3], 4));
-  bitWrite(ctrl[1], 11, bitRead(regsCtrl[3], 5));
-  bitWrite(ctrl[1], 12, bitRead(regsCtrl[4], 0));
-
-  encBtn[0] = bitRead(regsCtrl[1], 3);
-  encBtn[1] = bitRead(regsCtrl[1], 1);
-  encBtn[2] = bitRead(regsCtrl[0], 3);
-  encBtn[3] = bitRead(regsCtrl[0], 2);
-  encBtn[4] = bitRead(regsCtrl[2], 6);
-  encBtn[5] = bitRead(regsCtrl[2], 7);
-  encBtn[6] = bitRead(regsCtrl[3], 3);
-  encBtn[7] = bitRead(regsCtrl[4], 2);
-  encBtn[8] = bitRead(regsCtrl[4], 3);
-
-  for (int i{0}; i < 4; i++)
-  {
-    matrix[i] = regsMatrix[i];
-    // reverse first 4 bits (because of wiring)
-    bitWrite(matrix[i], 0, bitRead(regsMatrix[i], 3));
-    bitWrite(matrix[i], 1, bitRead(regsMatrix[i], 2));
-    bitWrite(matrix[i], 2, bitRead(regsMatrix[i], 1));
-    bitWrite(matrix[i], 3, bitRead(regsMatrix[i], 0));
-  }
-  // correct row order (because of wiring)
-  uint8_t row4 = matrix[0];
-  matrix[0] = matrix[1];
-  matrix[1] = matrix[2];
-  matrix[2] = matrix[3];
-  matrix[3] = row4;
-}
-void currentToPrevData()
-{
-  for (int i{0}; i < 4; i++)
-    matrixPrev[i] = matrix[i];
-  for (int i{0}; i < 2; i++)
-    ctrlPrev[i] = ctrl[i];
-  for (int i{0}; i < 2; i++)
-    encBtnPrev[i] = encBtn[i];
-}
-void updateLastChanged()
-{
-  for (int i{0}; i < 2; i++)
-    if (ctrlPrev[i] != ctrl[i])
-      ctrlData_lastChangeAt = millis();
-  for (int i{0}; i < 2; i++)
-    if (encBtnPrev[i] != encBtn[i])
-      ctrlData_lastChangeAt = millis();
-  for (int i{0}; i < 4; i++)
-    if (matrixPrev[i] != matrix[i])
-      matrix_lastChangeAt = millis();
-}
-
-bool hasFreshDataMatrix()
-{
-  for (int i{0}; i < 4; i++)
-  {
-    if (matrixSent[i] != matrix[i])
-      return true;
-  }
-  return false;
-}
-bool hasFreshDataCtrl()
-{
-  for (int i{0}; i < 13; i++)
-    if (ctrlSent[i] != ctrl[i])
-      return true;
-  for (int i{0}; i < 9; i++)
-    if (encBtnSent[i] != encBtn[i])
-      return true;
-  for (int i{0}; i < 9; i++)
-    if (enc[i] != 0)
-      return true;
-  return false;
 }
 
 void sendCtrl()
 {
-  for (int i{0}; i < cBytesTransmissionDataCtrl; i++)
+  Serial.println("ctrl requested");
+  // sende, header
+  char header{};
+  bitWrite(header, 0, ctrlBtnsDiffDetected);
+  bitWrite(header, 1, encBtnsDiffDetected);
+  bitWrite(header, 2, encsDiffDetected);
+  Wire.write(header);
+  if (ctrlBtnsDiffDetected)
   {
-    Wire.write(transmissionDataCtrl[i]);
+    ctrlBtnsDiffDetected = false;
+    uint8_t lsb = ctrlBtns;
+    uint8_t msb = ctrlBtns >> 8;
+    Wire.write(lsb);
+    Wire.write(msb);
+    ctrlBtnsSent = ctrlBtns;
   }
-  dataSentCtrl = true;
+  if (encBtnsDiffDetected)
+  {
+    encBtnsDiffDetected = false;
+    uint8_t msb = encBtns >> 8;
+    uint8_t lsb = encBtns;
+    Wire.write(lsb);
+    Wire.write(msb);
+    encBtnsSent = encBtns;
+  }
+  if (encsDiffDetected)
+  {
+    encsDiffDetected = false;
+    uint8_t encHeaderA{};
+    uint8_t encHeaderB{};
+    for (int i{0}; i < 8; i++)
+      if (enc[i] != 0)
+        bitWrite(encHeaderA, i, 1);
+    if (enc[8] != 0)
+      bitWrite(encHeaderB, 0, 1);
+
+    Wire.write(encHeaderA);
+    Wire.write(encHeaderB);
+
+    for (int i{0}; i < 9; i++)
+      if (enc[i] != 0)
+        Wire.write(enc[i]);
+    for (int i{0}; i < 9; i++)
+      enc[i] = 0;
+  }
   digitalWrite(IRQ_CTRL, HIGH);
 }
 void sendMatrix()
 {
-  for (int i = 0; i < cBytesTransmissionDataMatrix; i++)
-  {
-    Wire.write(transmissionDataMatrix[i]);
-  }
-  dataSentMatrix = true;
+  char header{0};
+  for (int r{0}; r < 4; r++)
+    if (matrixBtns[r] != matrixBtnsSent[r])
+      bitWrite(header, r, 1);
+  Wire.write(header);
+
+  for (int r{0}; r < 4; r++)
+    if (matrixBtns[r] != matrixBtnsSent[r])
+    {
+      Serial.println(matrixBtns[r], BIN);
+      Wire.write(matrixBtns[r]);
+    }
+
+  for (int r{0}; r < 4; r++)
+    matrixBtnsSent[r] = matrixBtns[r];
   digitalWrite(IRQ_MATRIX, HIGH);
 }
-
 void setOutput(int _)
 {
   byte requestedOutput = Wire.read();
   // matrix on 0, ctrl on 1, enc on 2
   nextOutput = requestedOutput;
 }
-
 void sendInputData()
 {
   if (nextOutput == B00000000)
@@ -430,40 +353,84 @@ void setup()
 
 void loop()
 {
-  if (dataSentCtrl)
+  readShift();
+  if (ctrlBtnsSent != ctrlBtns)
   {
-    setDataSentCtrl();
-    dataSentCtrl = false;
-  }
-  if (dataSentMatrix)
-  {
-    setDataSentMatrix();
-    dataSentMatrix = false;
-  }
-  currentToPrevData();
-  readRegs();
-  regToData();
-  updateLastChanged();
-  if (matrix_lastChangeAt <= (millis() - 50))
-  {
-    if (hasFreshDataMatrix())
+    if (!ctrlBtnsDiffDetected)
     {
-      prepTransmissionDataMatrix();
-      digitalWrite(IRQ_MATRIX, LOW);
+      ctrlBtnsDiffDetected = true;
+      ctrlBtnsDiffDetectedAt = millis();
+    }
+    else
+    {
+      if (ctrlBtnsDiffDetectedAt <= millis() - 50)
+      {
+        digitalWrite(IRQ_CTRL, HIGH);
+        digitalWrite(IRQ_CTRL, LOW);
+        Serial.print("ctrl low, ");
+      }
     }
   }
   else
-    digitalWrite(IRQ_MATRIX, HIGH);
+  {
+    ctrlBtnsDiffDetected = false;
+  }
 
-  if (ctrlData_lastChangeAt <= (millis() - 50)) // changes to Enc bypass this check
-                                                // Statemachine handles false positives of enc
+  if (encBtnsSent != encBtns)
   {
-    if (hasFreshDataCtrl())
+    if (!encBtnsDiffDetected)
     {
-      prepTransmissionDataCtrl();
-      digitalWrite(IRQ_CTRL, LOW);
+      encBtnsDiffDetected = true;
+      encBtnsDiffDetectedAt = millis();
+    }
+    else
+    {
+      if (encBtnsDiffDetectedAt <= millis() - 50)
+      {
+        digitalWrite(IRQ_CTRL, HIGH);
+        digitalWrite(IRQ_CTRL, LOW);
+        Serial.print("ctrl low, ");
+      }
     }
   }
   else
-    digitalWrite(IRQ_CTRL, HIGH);
+  {
+    encBtnsDiffDetected = false;
+  }
+
+  if (isDifferentToSentMatrixBtns())
+  {
+    if (!matrixBtnsDiffDetected)
+    {
+      matrixBtnsDiffDetected = true;
+      matrixBtnsDiffDetectedAt = millis();
+    }
+    else
+    {
+      if (matrixBtnsDiffDetectedAt <= millis() - 50)
+      {
+        digitalWrite(IRQ_MATRIX, HIGH);
+        digitalWrite(IRQ_MATRIX, LOW);
+        Serial.print("matrix low, ");
+      }
+    }
+  }
+  else
+  {
+    matrixBtnsDiffDetected = false;
+  }
+
+  bool encChanged{false};
+  for (int i{0}; i < 9; i++)
+  {
+    if (enc[i] != 0)
+    {
+      encChanged = true;
+      encsDiffDetected = true;
+      digitalWrite(IRQ_CTRL, HIGH);
+      digitalWrite(IRQ_CTRL, LOW);
+      Serial.print("ctrl low");
+    }
+  }
+  encsDiffDetected = encChanged;
 }
